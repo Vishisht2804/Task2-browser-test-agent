@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from enum import StrEnum
 from typing import Annotated, Self
+from uuid import uuid4
 
 from pydantic import (
     AnyHttpUrl,
@@ -60,6 +61,7 @@ class FrameInfo(StrictModel):
     url: str
     name: str | None = None
     is_main_frame: bool = False
+    depth: int = Field(default=0, ge=0)
 
 
 class ElementInfo(StrictModel):
@@ -78,17 +80,30 @@ class ElementInfo(StrictModel):
     visible: bool = True
     enabled: bool = True
     checked: bool | None = None
+    id_attribute: str | None = None
+    name_attribute: str | None = None
+    test_id: str | None = None
+    aria_label: str | None = None
+    autocomplete: str | None = None
+    required: bool = False
+    read_only: bool = False
+    multiple: bool = False
+    selected: bool | None = None
 
 
 class BrowserObservation(StrictModel):
     """Compact representation of the current browser state."""
 
+    observation_id: Identifier = Field(
+        default_factory=lambda: f"obs_{uuid4().hex[:20]}"
+    )
     url: str
     title: str
     observed_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     frames: list[FrameInfo] = Field(default_factory=list)
     elements: list[ElementInfo] = Field(default_factory=list)
     visible_text: str = Field(default="", max_length=20_000)
+    warnings: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def element_ids_must_be_unique(self) -> Self:
@@ -120,9 +135,13 @@ class AgentAction(StrictModel):
 
     action: ActionType
     element_id: Identifier
+    observation_id: Identifier
     value: str | None = None
     value_ref: EnvironmentReference | None = None
     timeout_ms: int | None = Field(default=None, ge=100, le=60_000)
+    wait_state: str = Field(
+        default="visible", pattern=r"^(visible|hidden|attached|detached)$"
+    )
 
     @model_validator(mode="after")
     def validate_action_arguments(self) -> Self:
@@ -138,7 +157,120 @@ class AgentAction(StrictModel):
                 raise ValueError("press does not accept value_ref")
         elif self.value is not None or self.value_ref is not None:
             raise ValueError(f"{self.action.value} does not accept value or value_ref")
+        if self.action != ActionType.WAIT and self.wait_state != "visible":
+            raise ValueError("wait_state can only be customized for wait actions")
         return self
+
+
+class LocatorStrategy(StrEnum):
+    """Supported deterministic locator strategies for Phase 1 plans."""
+
+    ROLE = "role"
+    LABEL = "label"
+    PLACEHOLDER = "placeholder"
+    TEXT = "text"
+    TEST_ID = "test_id"
+    CSS = "css"
+
+
+class ManualLocator(StrictModel):
+    """A locator supplied by a developer-authored deterministic action plan."""
+
+    strategy: LocatorStrategy
+    value: NonEmptyString | None = None
+    role: NonEmptyString | None = None
+    exact: bool = True
+    index: int | None = Field(default=None, ge=0)
+
+    @model_validator(mode="after")
+    def validate_locator_shape(self) -> Self:
+        if self.strategy == LocatorStrategy.ROLE:
+            if self.role is None:
+                raise ValueError("role locators require a role")
+        elif self.role is not None:
+            raise ValueError("role is only valid with the role locator strategy")
+
+        if self.value is None and self.strategy != LocatorStrategy.ROLE:
+            raise ValueError(f"{self.strategy.value} locators require a value")
+        return self
+
+
+class ManualAction(StrictModel):
+    """One browser action with a locator known in advance (no LLM involved)."""
+
+    action: ActionType
+    locator: ManualLocator
+    value: str | None = None
+    value_ref: EnvironmentReference | None = None
+    timeout_ms: int | None = Field(default=None, ge=100, le=60_000)
+    wait_state: str = Field(default="visible", pattern=r"^(visible|hidden|attached|detached)$")
+
+    @model_validator(mode="after")
+    def validate_action_arguments(self) -> Self:
+        if self.action in {ActionType.FILL, ActionType.SELECT}:
+            if (self.value is None) == (self.value_ref is None):
+                raise ValueError(
+                    f"{self.action.value} requires exactly one of value or value_ref"
+                )
+        elif self.action == ActionType.PRESS:
+            if self.value is None or not self.value.strip():
+                raise ValueError("press requires a non-empty key in value")
+            if self.value_ref is not None:
+                raise ValueError("press does not accept value_ref")
+        elif self.value is not None or self.value_ref is not None:
+            raise ValueError(f"{self.action.value} does not accept value or value_ref")
+
+        if self.action != ActionType.WAIT and self.wait_state != "visible":
+            raise ValueError("wait_state can only be customized for wait actions")
+        return self
+
+
+class ManualTestPlan(StrictModel):
+    """A manually authored action sequence used to validate the browser engine."""
+
+    name: NonEmptyString
+    actions: list[ManualAction] = Field(min_length=1, max_length=100)
+
+
+class ManualStepResult(StrictModel):
+    """Safe execution summary for one manual action (never includes secret values)."""
+
+    step_number: int = Field(ge=1)
+    action: ActionType
+    locator: str
+    success: bool
+    message: str
+    started_at: datetime
+    finished_at: datetime
+    screenshot_path: str | None = None
+
+
+class TestStatus(StrEnum):
+    PASS = "PASS"
+    FAIL = "FAIL"
+    ERROR = "ERROR"
+    BLOCKED = "BLOCKED"
+
+
+class ManualExecutionReport(StrictModel):
+    """Phase 1 action-sequence outcome; it does not yet evaluate test assertions."""
+
+    test_name: str
+    status: TestStatus
+    url: str
+    started_at: datetime
+    finished_at: datetime
+    steps: list[ManualStepResult] = Field(default_factory=list)
+    console_errors: list[str] = Field(default_factory=list)
+    page_errors: list[str] = Field(default_factory=list)
+    opened_page_count: int = Field(default=0, ge=0)
+    popup_count: int = Field(default=0, ge=0)
+    failure_reason: str | None = None
+    artifact_paths: list[str] = Field(default_factory=list)
+
+    @property
+    def duration_seconds(self) -> float:
+        return max(0.0, (self.finished_at - self.started_at).total_seconds())
 
 
 class AssertionType(StrEnum):
@@ -162,7 +294,9 @@ class AssertionSpec(StrictModel):
     def validate_expected_value(self) -> Self:
         if self.assertion in {AssertionType.TEXT_CONTAINS, AssertionType.URL_CONTAINS}:
             if not isinstance(self.expected, str) or not self.expected:
-                raise ValueError(f"{self.assertion.value} requires a non-empty string expected")
+                raise ValueError(
+                    f"{self.assertion.value} requires a non-empty string expected"
+                )
         elif self.assertion == AssertionType.VALUE_EQUALS:
             if not isinstance(self.expected, str):
                 raise ValueError("value_equals requires a string expected")
@@ -194,13 +328,6 @@ class AgentDecision(StrictModel):
         if self.decision != AgentDecisionType.ACT and self.action is not None:
             raise ValueError("only an act decision may include an action")
         return self
-
-
-class TestStatus(StrEnum):
-    PASS = "PASS"
-    FAIL = "FAIL"
-    ERROR = "ERROR"
-    BLOCKED = "BLOCKED"
 
 
 class StepResult(StrictModel):

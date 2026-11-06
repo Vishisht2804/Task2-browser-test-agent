@@ -7,5 +7,5 @@
 - [x] Provider-neutral LLM interface
 - [x] CLI accepts URL, plain-English instruction, test-data references, and limits
 - [x] Unit tests for schema validation and CLI behavior
-- [ ] Install dependencies in a Python 3.12 environment and run the test suite
-- [ ] Browser execution (Phase 1; intentionally out of scope here)
+- [x] Run the test suite in the available Python 3.13.5 environment
+- [x] Phase 0 scope complete; browser execution is tracked in `PHASE1.md`

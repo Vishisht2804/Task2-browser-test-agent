@@ -25,6 +25,8 @@ class Settings(BaseSettings):
     default_timeout_seconds: int = 120
     browser_headless: bool = True
     browser_action_timeout_ms: int = 10_000
+    browser_navigation_timeout_ms: int = 30_000
+    browser_executable_path: Path | None = None
     artifact_dir: Path = Path("artifacts")
 
     # Provider selection is configuration, not a browser-engine dependency.

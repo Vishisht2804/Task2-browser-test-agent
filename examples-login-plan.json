@@ -1,0 +1,29 @@
+{
+  "name": "Example customer login form",
+  "actions": [
+    {
+      "action": "fill",
+      "locator": {
+        "strategy": "label",
+        "value": "Email"
+      },
+      "value_ref": "CUSTOMER_EMAIL"
+    },
+    {
+      "action": "fill",
+      "locator": {
+        "strategy": "label",
+        "value": "Password"
+      },
+      "value_ref": "CUSTOMER_PASSWORD"
+    },
+    {
+      "action": "click",
+      "locator": {
+        "strategy": "role",
+        "role": "button",
+        "value": "Login"
+      }
+    }
+  ]
+}

@@ -47,12 +47,17 @@ def test_test_spec_rejects_duplicate_data_references() -> None:
 
 def test_fill_action_requires_exactly_one_value_source() -> None:
     with pytest.raises(ValidationError):
-        AgentAction(action=ActionType.FILL, element_id="email")
+        AgentAction(
+            action=ActionType.FILL,
+            element_id="email",
+            observation_id="obs_1234567890",
+        )
 
     with pytest.raises(ValidationError):
         AgentAction(
             action=ActionType.FILL,
             element_id="email",
+            observation_id="obs_1234567890",
             value="someone@example.com",
             value_ref="CUSTOMER_EMAIL",
         )
@@ -60,6 +65,7 @@ def test_fill_action_requires_exactly_one_value_source() -> None:
     action = AgentAction(
         action=ActionType.FILL,
         element_id="email",
+        observation_id="obs_1234567890",
         value_ref="CUSTOMER_EMAIL",
     )
     assert action.value_ref == "CUSTOMER_EMAIL"
@@ -68,6 +74,7 @@ def test_fill_action_requires_exactly_one_value_source() -> None:
 def test_observation_rejects_element_with_unknown_frame() -> None:
     with pytest.raises(ValidationError, match="unknown frame"):
         BrowserObservation(
+            observation_id="obs_1234567890",
             url="https://example.com",
             title="Example",
             frames=[],
@@ -84,6 +91,7 @@ def test_observation_rejects_element_with_unknown_frame() -> None:
 
 def test_observation_accepts_main_frame_and_element() -> None:
     observation = BrowserObservation(
+        observation_id="obs_1234567890",
         url="https://example.com",
         title="Example",
         frames=[
