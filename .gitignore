@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+
+# Browser artifacts and generated output
+artifacts/*
+!artifacts/.gitkeep
+playwright-report/
+test-results/
+
+# OS/editor
+.DS_Store
+.idea/
+.vscode/
