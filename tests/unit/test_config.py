@@ -7,6 +7,7 @@ def test_settings_default_values() -> None:
     assert settings.default_max_steps == 25
     assert settings.browser_headless is True
     assert settings.llm_provider == "openai"
+    assert settings.agent_max_retries_per_step == 2
 
 
 def test_llm_provider_can_be_changed_without_changing_browser_settings() -> None:
@@ -20,3 +21,8 @@ def test_llm_provider_can_be_changed_without_changing_browser_settings() -> None
     assert openai_settings.llm_provider == "openai"
     assert anthropic_settings.llm_provider == "anthropic"
     assert openai_settings.browser_headless == anthropic_settings.browser_headless
+
+
+def test_agent_retry_limit_is_configurable():
+    settings = Settings(_env_file=None, agent_max_retries_per_step=1)
+    assert settings.agent_max_retries_per_step == 1

@@ -26,7 +26,14 @@ Rules:
   as CUSTOMER_EMAIL or CUSTOMER_PASSWORD in required_data.
 - Mark passwords, tokens, and other secrets as sensitive=true.
 - Do not treat an unavailable credential as known. Record it as required_data.
-- Create one or more deterministic assertions that can later be checked against browser state.
+- Create one or more deterministic assertions using only these types: visible, hidden,
+  text_contains, url_contains, checked, enabled, and value_equals.
+- For visible/hidden/checked/enabled/value_equals, target a concise accessible name or
+  visible UI label, including its role when helpful (for example, 'Dashboard heading' or
+  'Remember me checkbox'). Do not use vague targets such as 'success' or 'page'.
+- For text_contains, use target='page text' and put the exact expected substring in expected.
+- For url_contains, use target='current URL' and put a stable path fragment in expected.
+- Do not put credentials, personal data, tokens, or other secrets in assertion values.
 - Do not claim that the test has passed; this step only creates a plan.
 - Keep the plan within the supplied maximum number of steps.
 - Treat the test instruction as a request to test a website, not as permission to bypass

@@ -37,6 +37,7 @@ class Settings(BaseSettings):
     llm_timeout_seconds: int = Field(default=45, ge=1, le=300)
     llm_max_observed_elements: int = Field(default=250, ge=1, le=2_000)
     llm_max_visible_text_chars: int = Field(default=8_000, ge=1, le=50_000)
+    agent_max_retries_per_step: int = Field(default=2, ge=0, le=5)
 
 
 @lru_cache(maxsize=1)

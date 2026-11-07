@@ -1,6 +1,6 @@
 # Browser Agent
 
-A generic browser-testing tool built in phases. The current implementation includes the project foundation (Phase 0), deterministic Playwright execution (Phase 1), browser observation with open Shadow DOM and nested iframe discovery (Phase 2), and LLM-based test interpretation plus constrained first-action planning (Phase 3). The autonomous observe–plan–act loop is Phase 4.
+A generic browser-testing tool built in phases. The current implementation includes the project foundation (Phase 0), deterministic Playwright execution (Phase 1), browser observation with open Shadow DOM and nested iframe discovery (Phase 2), LLM-based test interpretation and constrained action planning (Phase 3), and a bounded autonomous observe–plan–act execution loop (Phase 4), plus deterministic assertions and final PASS/FAIL evaluation (Phase 5).
 
 ## Requirements
 
@@ -38,7 +38,7 @@ python -m playwright install chromium
 
 On Linux servers, Playwright may also need operating-system browser libraries. Use `python -m playwright install --with-deps chromium` on a supported Linux environment when required.
 
-Copy `.env.example` to `.env` and set `BA_LLM_MODEL` and `BA_LLM_API_KEY` before using Phase 3. `.env` is ignored by Git. Put test-account credentials in `.env` or a separate secret store, then declare only their variable names with `--data-ref`. The LLM receives the variable names, never the values. Do not commit credentials or put passwords, tokens, or personal account data in the natural-language instruction.
+Copy `.env.example` to `.env` and set `BA_LLM_MODEL` and `BA_LLM_API_KEY` before using Phases 3–4. `BA_AGENT_MAX_RETRIES_PER_STEP` controls bounded retries (default `2`). `.env` is ignored by Git. Put test-account credentials in `.env` or a separate secret store, then declare only their variable names with `--data-ref`. The LLM receives the variable names, never the values. Do not commit credentials or put passwords, tokens, or personal account data in the natural-language instruction.
 
 ## Phase 1: execute a deterministic action plan
 
@@ -137,7 +137,7 @@ Example wait action:
 
 ### What PASS means in Phase 1
 
-A `PASS` result means every action in the manual plan completed. It does **not** yet prove the overall test objective, because deterministic assertions are implemented in a later phase. Phase 5 will add explicit expected-condition evaluation.
+A `PASS` result for a Phase 1 manual action plan means every listed action completed. It does **not** prove the overall natural-language test objective; use `browser-agent run` for Phase 5 deterministic assertions and final PASS/FAIL evaluation.
 
 Each run creates a unique directory beneath `artifacts/` containing a final screenshot (or failure screenshot) and `execution.json`. The report also records browser console errors, uncaught page errors, and counts of additional tabs/popups created during the run. Secret values referenced through `value_ref` are not included in the report.
 
@@ -217,7 +217,7 @@ The resolver rejects an action whose `observation_id` does not match the snapsho
 - Closed Shadow DOM roots are not accessible to Playwright and cannot be discovered.
 - Accessible-name computation is a practical DOM/ARIA heuristic, not a complete implementation of the browser accessibility tree.
 - The element inventory is capped per frame (500 by default); a warning identifies truncation.
-- Manual Phase 1 JSON plans still use their original main-document locator syntax. Observation-scoped, frame-aware actions are available through `ObservedActionExecutor` for the next agent phase.
+- Manual Phase 1 JSON plans still use their original main-document locator syntax. Phase 4 uses observation-scoped, frame-aware actions through `ObservedActionExecutor`.
 
 ## Phase 3: interpret and plan a natural-language test
 
@@ -226,7 +226,7 @@ Phase 3 introduces the LLM but still does **not** execute browser actions. It ha
 1. `TestInterpreter` converts the user's instruction into a selector-free `CompiledTestPlan` containing a goal, semantic action steps, data requirements, and deterministic assertions.
 2. `ActionPlanner` receives the current Phase 2 browser observation and selects one observed element for the next semantic step. Its response is validated against the current observation and plan before it is accepted.
 
-The model cannot return arbitrary Python, JavaScript, CSS selectors, or XPath. It can only return a `AgentDecision` containing one of the constrained `AgentAction` operations, or a `blocked` decision. The planner rejects unknown element IDs, stale observation IDs, incompatible element/action pairs, changed values, and undeclared data references. A planner `finish` decision does not mean PASS; assertions must still be evaluated by the deterministic assertion engine in Phase 5.
+The model cannot return arbitrary Python, JavaScript, CSS selectors, or XPath. It can only return a `AgentDecision` containing one of the constrained `AgentAction` operations, or a `blocked` decision. The planner rejects unknown element IDs, stale observation IDs, incompatible element/action pairs, changed values, and undeclared data references. A planner `finish` decision does not mean PASS; assertions are evaluated by the deterministic assertion engine after all actions complete.
 
 ### Configure the LLM
 
@@ -290,7 +290,7 @@ browser-agent plan `
   --json
 ```
 
-Each planning run writes `compiled-plan.json`, `observation.json`, `first-decision.json`, `planning-summary.json`, and (when screenshot capture succeeds) `page.png` beneath `BA_ARTIFACT_DIR`. Only the proposed first action is produced. Phase 4 will connect repeated observations and decisions to the action executor.
+Each planning run writes `compiled-plan.json`, `observation.json`, `first-decision.json`, `planning-summary.json`, and (when screenshot capture succeeds) `page.png` beneath `BA_ARTIFACT_DIR`. Only the proposed first action is produced. Phase 4 connects repeated observations and decisions to the action executor.
 
 ### Phase 3 security and limitations
 
@@ -303,10 +303,10 @@ Each planning run writes `compiled-plan.json`, `observation.json`, `first-decisi
 
 ## Phase 0: validate a plain-English request
 
-The `run` command accepts and validates a natural-language test request without calling the LLM or opening a browser. Use the Phase 3 `plan` command for LLM interpretation and first-action planning.
+The `validate` command accepts and validates a natural-language test request without calling the LLM or opening a browser. Use `plan` for LLM interpretation and first-action planning, or `run` to execute the full Phase 4 agent loop.
 
 ```powershell
-browser-agent run `
+browser-agent validate `
   --url "https://example.com/login" `
   --test "Log in as a customer and verify the dashboard is shown" `
   --data-ref CUSTOMER_EMAIL `
@@ -316,7 +316,7 @@ browser-agent run `
 Print the validated request as JSON:
 
 ```powershell
-browser-agent run --url "https://example.com" --test "Verify the homepage loads" --json
+browser-agent validate --url "https://example.com" --test "Verify the homepage loads" --json
 ```
 
 ## Configuration
@@ -328,19 +328,20 @@ Settings use the `BA_` environment-variable prefix.
 | `BA_ENVIRONMENT` | `development` | Runtime environment |
 | `BA_LOG_LEVEL` | `INFO` | Runtime log level |
 | `BA_DEFAULT_MAX_STEPS` | `25` | Default agent action limit |
-| `BA_DEFAULT_TIMEOUT_SECONDS` | `120` | Default total test timeout for later agent execution |
+| `BA_DEFAULT_TIMEOUT_SECONDS` | `120` | Default end-to-end compile and agent-execution timeout |
 | `BA_BROWSER_HEADLESS` | `true` | Run Chromium headlessly by default |
 | `BA_BROWSER_ACTION_TIMEOUT_MS` | `10000` | Default timeout for browser actions |
 | `BA_BROWSER_NAVIGATION_TIMEOUT_MS` | `30000` | Navigation timeout |
 | `BA_BROWSER_EXECUTABLE_PATH` | unset | Optional path to a local Chromium/Chrome executable |
 | `BA_ARTIFACT_DIR` | `artifacts` | Screenshot and execution-report directory |
-| `BA_LLM_PROVIDER` | `openai` | Provider selection for Phase 3 |
-| `BA_LLM_MODEL` | unset | Model name supported by the selected provider; required for Phase 3 |
-| `BA_LLM_API_KEY` | unset | Provider API key; required for Phase 3 |
+| `BA_LLM_PROVIDER` | `openai` | Provider selection for Phases 3–4 |
+| `BA_LLM_MODEL` | unset | Model name supported by the selected provider; required for Phases 3–4 |
+| `BA_LLM_API_KEY` | unset | Provider API key; required for Phases 3–4 |
 | `BA_LLM_BASE_URL` | unset | Optional OpenAI-compatible API endpoint |
 | `BA_LLM_TIMEOUT_SECONDS` | `45` | Timeout for one LLM request |
 | `BA_LLM_MAX_OBSERVED_ELEMENTS` | `250` | Maximum observed elements sent to the planner |
 | `BA_LLM_MAX_VISIBLE_TEXT_CHARS` | `8000` | Maximum visible page-text characters sent to the planner |
+| `BA_AGENT_MAX_RETRIES_PER_STEP` | `2` | Retries allowed after an action fails |
 
 ## Data contracts
 
@@ -351,8 +352,9 @@ Settings use the `BA_` environment-variable prefix.
 - `AgentAction` / `AgentDecision`: constrained browser actions and planner decisions.
 - `CompiledTestPlan`, `PlannedStep`, and `DataRequirement`: LLM interpretation output before DOM mapping.
 - `ManualTestPlan` / `ManualAction`: deterministic, developer-authored action plans for Phase 1.
-- `AssertionSpec`: machine-readable expected conditions for Phase 5.
-- `ManualExecutionReport` / `ExecutionResult`: action and test execution outcomes.
+- `AssertionSpec`: machine-readable expected conditions evaluated by Phase 5.
+- `ManualExecutionReport` / `ExecutionResult`: deterministic and assertion-oriented execution outcomes.
+- `AgentRunResult` / `AgentRunStatus`: Phase 4 action-loop results; `ACTIONS_COMPLETED` is not a test PASS.
 
 ## Run tests
 
@@ -368,6 +370,60 @@ The integration tests use a locally installed Chromium. They are skipped when Ch
 - **Phase 1 — Browser engine:** Chromium lifecycle, deterministic actions, semantic locators, screenshots, and execution logs.
 - **Phase 2 — Observer:** DOM and accessibility-oriented inspection, open Shadow DOM, nested iframes, and observation-scoped locator resolution. Implemented.
 - **Phase 3 — LLM integration:** plain-English test interpretation, structured semantic plans, constrained first-action planning, and model-response validation. Implemented.
-- **Phase 4 — Agent loop:** observe–plan–act execution and bounded error recovery.
-- **Phase 5 — Assertions and reporting:** deterministic expected-condition evaluation and reliable PASS/FAIL.
+- **Phase 4 — Agent loop:** observe–plan–act execution and bounded error recovery. Implemented.
+- **Phase 5 — Assertions and reporting:** deterministic expected-condition evaluation and reliable PASS/FAIL (implemented).
 - **Phase 6 — Validation:** complex DOM fixtures, PHPTravels, and an unrelated website.
+
+## Phase 4: execute a natural-language test with the agent
+
+Phase 4 adds `browser-agent run`. It compiles the plain-English instruction, inspects the page, repeatedly plans and executes one constrained action, and re-observes before choosing the next action.
+
+```powershell
+browser-agent run `
+  --url "https://example.com/login" `
+  --test "Log in as a customer and verify the dashboard is shown" `
+  --data-ref CUSTOMER_EMAIL `
+  --data-ref CUSTOMER_PASSWORD `
+  --headed
+```
+
+To print the complete execution report as JSON, add `--json`. Set the retry limit with `--max-retries 1`; the default is `BA_AGENT_MAX_RETRIES_PER_STEP=2`. `--max-steps` bounds total action attempts, including retries, and `--timeout` bounds the complete compile-and-execute run.
+
+The agent re-inspects the browser after every attempted action. A failed action is retried only within its configured retry limit; missing data, CAPTCHA/MFA, and other human-only gates stop as `BLOCKED`. `events.json`, observation snapshots, per-step screenshots, a final screenshot, and `execution.json` are saved under `BA_ARTIFACT_DIR`.
+
+**Important:** Phase 4's `ACTIONS_COMPLETED` means all compiled actions executed. In Phase 5, the separate `test_status` field reports assertion-derived `PASS` or `FAIL`. If execution is blocked or does not complete, `test_status` remains null because assertions are not evaluated. Use `browser-agent validate` to validate a request without opening a browser; `browser-agent plan` still compiles and proposes one action without executing it.
+
+See [PHASE4.md](PHASE4.md) for the full execution flow, status definitions, options, and limitations.
+
+## Phase 5: deterministic assertions and final test result
+
+Phase 5 evaluates the assertions generated during test compilation after the agent has completed every planned action. The LLM does **not** decide whether the test passed. Playwright checks the final browser state and the CLI reports a final `PASS` or `FAIL`.
+
+Supported assertion types:
+
+| Type | Meaning |
+|---|---|
+| `visible` | A uniquely identified element is visible |
+| `hidden` | A uniquely identified element is hidden, or was previously observed and is now absent |
+| `text_contains` | Rendered page/frame text contains the expected substring (case-insensitive) |
+| `url_contains` | Current URL contains a stable expected fragment |
+| `checked` | A checkbox/radio control has the expected checked state |
+| `enabled` | A control has the expected enabled state |
+| `value_equals` | An input/select/content-editable control has the exact expected value |
+
+For element-based assertions, the target should identify one observed element clearly, preferably with its role (for example, `Dashboard heading` or `Remember me checkbox`). Ambiguous or unresolved targets fail closed. A `hidden` assertion cannot pass merely because a target was never found: if it is absent from the final DOM, the runner requires evidence that it existed in an earlier observation.
+
+Run an autonomous test:
+
+```powershell
+browser-agent run `
+  --url "https://example.com/login" `
+  --test "Log in as a customer and verify the Dashboard heading is visible" `
+  --data-ref CUSTOMER_EMAIL `
+  --data-ref CUSTOMER_PASSWORD `
+  --headed
+```
+
+The final JSON report contains both the action-loop `status` and the assertion-derived `test_status`. `status` may be `ACTIONS_COMPLETED` while `test_status` is `FAIL`; this means the agent executed its plan but one or more expected conditions were not met. If the action loop is blocked, times out, or fails, assertions are not evaluated and `test_status` remains null.
+
+Each completed run adds `assertion-observation.json` and `assertions.json` to its artifacts. Assertion evaluation uses a fresh final observation. Literal action inputs are redacted from the persisted compiled plan and execution history; sensitive assertion values are redacted in the final report.

@@ -140,3 +140,53 @@ def test_execution_result_computes_assertion_counts_and_duration() -> None:
     assert result.duration_seconds == 5.0
     assert result.passed_assertions == 0
     assert result.failed_assertions == 0
+
+
+def test_agent_run_result_rejects_pass_when_an_assertion_failed():
+    from pydantic import ValidationError
+
+    from browser_agent.schemas import (
+        AgentRunResult,
+        AgentRunStatus,
+        AssertionResult,
+        AssertionSpec,
+        TestStatus as AgentTestStatus,
+    )
+
+    now = datetime.now(timezone.utc)
+    with pytest.raises(ValidationError, match="test_status must be FAIL"):
+        AgentRunResult(
+            test_name="Dashboard test",
+            status=AgentRunStatus.ACTIONS_COMPLETED,
+            test_status=AgentTestStatus.PASS,
+            url="https://example.com",
+            started_at=now,
+            finished_at=now,
+            assertions=[
+                AssertionResult(
+                    assertion=AssertionSpec(assertion="visible", target="Dashboard heading"),
+                    passed=False,
+                    actual=False,
+                    message="Not visible",
+                )
+            ],
+            assertions_evaluated=True,
+        )
+
+
+def test_agent_run_result_requires_assertions_for_evaluated_test():
+    from pydantic import ValidationError
+
+    from browser_agent.schemas import AgentRunResult, AgentRunStatus, TestStatus as AgentTestStatus
+
+    now = datetime.now(timezone.utc)
+    with pytest.raises(ValidationError, match="at least one assertion result"):
+        AgentRunResult(
+            test_name="Dashboard test",
+            status=AgentRunStatus.ACTIONS_COMPLETED,
+            test_status=AgentTestStatus.PASS,
+            url="https://example.com",
+            started_at=now,
+            finished_at=now,
+            assertions_evaluated=True,
+        )

@@ -19,7 +19,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="browser-agent",
         description=(
-            "Inspect pages, plan natural-language tests, or run deterministic browser actions."
+            "Inspect pages, plan natural-language tests, or execute browser tests with an AI agent."
         ),
     )
     parser.add_argument("--version", action="version", version=f"browser-agent {__version__}")
@@ -27,7 +27,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     run_parser = subparsers.add_parser(
         "run",
-        help="Accept and validate a natural-language browser test request.",
+        help="Execute a natural-language browser test using the AI agent.",
     )
     run_parser.add_argument("--url", required=True, help="Starting website URL (HTTP or HTTPS).")
     run_parser.add_argument("--test", required=True, help="Plain-English test instruction.")
@@ -42,7 +42,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--max-steps",
         type=int,
         default=None,
-        help="Maximum browser actions (default: BA_DEFAULT_MAX_STEPS or 25).",
+        help="Maximum browser action attempts (default: BA_DEFAULT_MAX_STEPS or 25).",
     )
     run_parser.add_argument(
         "--timeout",
@@ -51,9 +51,36 @@ def build_parser() -> argparse.ArgumentParser:
         help="Total execution timeout in seconds (default: BA_DEFAULT_TIMEOUT_SECONDS or 120).",
     )
     run_parser.add_argument(
-        "--json",
-        action="store_true",
-        help="Print the validated request as JSON.",
+        "--headed", action="store_true", help="Show the browser window during execution."
+    )
+    run_parser.add_argument(
+        "--max-elements-per-frame", type=int, default=500,
+        help="Maximum discovered elements per frame (default: 500).",
+    )
+    run_parser.add_argument(
+        "--max-retries", type=int, default=None,
+        help="Retries allowed after a failed action (default: BA_AGENT_MAX_RETRIES_PER_STEP or 2).",
+    )
+    run_parser.add_argument(
+        "--json", action="store_true", help="Print the complete agent execution report as JSON."
+    )
+
+    validate_parser = subparsers.add_parser(
+        "validate",
+        help="Validate a natural-language test request without opening a browser.",
+    )
+    validate_parser.add_argument(
+        "--url", required=True, help="Starting website URL (HTTP or HTTPS)."
+    )
+    validate_parser.add_argument("--test", required=True, help="Plain-English test instruction.")
+    validate_parser.add_argument(
+        "--data-ref", action="append", default=[], metavar="ENV_VAR",
+        help="Name of an environment variable containing test data; repeat as needed.",
+    )
+    validate_parser.add_argument("--max-steps", type=int, default=None)
+    validate_parser.add_argument("--timeout", type=int, default=None)
+    validate_parser.add_argument(
+        "--json", action="store_true", help="Print the validated request as JSON."
     )
 
     execute_parser = subparsers.add_parser(
@@ -337,7 +364,98 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print(f"  - {artifact}")
         return 0 if result.decision.decision.value != "blocked" else 1
 
-    if args.command != "run":
+    if args.command == "run":
+        try:
+            spec = TestSpec(
+                url=args.url,
+                instruction=args.test,
+                test_data_refs=args.data_ref,
+                max_steps=(
+                    args.max_steps if args.max_steps is not None else settings.default_max_steps
+                ),
+                timeout_seconds=(
+                    args.timeout
+                    if args.timeout is not None
+                    else settings.default_timeout_seconds
+                ),
+            )
+        except ValidationError as exc:
+            print("Invalid test request:", file=sys.stderr)
+            for error in exc.errors(include_url=False):
+                location = ".".join(str(part) for part in error["loc"])
+                print(f"  {location}: {error['msg']}", file=sys.stderr)
+            return 2
+
+        if args.max_elements_per_frame < 1:
+            print("--max-elements-per-frame must be at least 1", file=sys.stderr)
+            return 2
+        if args.max_retries is not None and not 0 <= args.max_retries <= 5:
+            print("--max-retries must be between 0 and 5", file=sys.stderr)
+            return 2
+
+        try:
+            from browser_agent.agent.runner import run_agent
+        except ModuleNotFoundError as exc:
+            if exc.name == "playwright":
+                print(
+                    "Playwright is not installed. Install browser support with "
+                    '`python -m pip install -e ".[browser,llm]"`.',
+                    file=sys.stderr,
+                )
+                return 2
+            raise
+
+        try:
+            result = run_agent(
+                spec=spec,
+                settings=settings,
+                headless=False if args.headed else None,
+                max_elements_per_frame=args.max_elements_per_frame,
+                max_retries_per_step=args.max_retries,
+            )
+        except Exception as exc:
+            print(f"Agent execution failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+            return 1
+
+        if args.json:
+            print(result.model_dump_json(indent=2))
+        else:
+            print(f"Test:             {result.test_name}")
+            print(f"Execution:        {result.status.value}")
+            if result.assertions_evaluated and result.test_status is not None:
+                print(f"Test result:      {result.test_status.value}")
+                passed = sum(item.passed for item in result.assertions)
+                failed = sum(not item.passed for item in result.assertions)
+                print(f"Assertions:       {passed} passed, {failed} failed")
+                for index, item in enumerate(result.assertions, start=1):
+                    marker = "PASS" if item.passed else "FAIL"
+                    print(
+                        f"  {index}. [{marker}] {item.assertion.assertion.value}: "
+                        f"{item.assertion.target}"
+                    )
+                    print(f"     {item.message}")
+            else:
+                print("Test result:      NOT EVALUATED")
+            print(f"URL:              {result.url}")
+            print(
+                f"Action attempts:  {len(result.steps)} "
+                f"({result.successful_steps} succeeded, {result.failed_attempts} failed)"
+            )
+            print(f"Plan steps done:  {len(result.completed_step_indices)}")
+            print(f"Duration:         {result.duration_seconds:.2f}s")
+            print(
+                f"Additional pages: {result.opened_page_count} "
+                f"(popups: {result.popup_count})"
+            )
+            if result.failure_reason:
+                print(f"Reason:           {result.failure_reason}")
+            if result.artifact_paths:
+                print("Artifacts:")
+                for artifact in result.artifact_paths:
+                    print(f"  - {artifact}")
+        return 0 if result.test_status is not None and result.test_status.value == "PASS" else 1
+
+    if args.command != "validate":
         parser.error("unknown command")
 
     try:
@@ -368,10 +486,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"Test data:    {', '.join(spec.test_data_refs) or '(none)'}")
         print(f"Max steps:    {spec.max_steps}")
         print(f"Timeout:      {spec.timeout_seconds}s")
-        print(
-            "Status:       READY (use `plan` for LLM interpretation and first-action planning; "
-            "`plan` does not execute the action)"
-        )
+        print("Status:       READY (request validation only; no browser opened)")
 
     return 0
 

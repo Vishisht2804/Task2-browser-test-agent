@@ -252,6 +252,17 @@ class TestStatus(StrEnum):
     BLOCKED = "BLOCKED"
 
 
+class AgentRunStatus(StrEnum):
+    """Phase 4 action-loop outcomes; none of these imply assertion success."""
+
+    ACTIONS_COMPLETED = "ACTIONS_COMPLETED"
+    BLOCKED = "BLOCKED"
+    STEP_LIMIT = "STEP_LIMIT"
+    FAILED = "FAILED"
+    ERROR = "ERROR"
+    TIMEOUT = "TIMEOUT"
+
+
 class ManualExecutionReport(StrictModel):
     """Phase 1 action-sequence outcome; it does not yet evaluate test assertions."""
 
@@ -438,3 +449,64 @@ class ExecutionResult(StrictModel):
     @property
     def failed_assertions(self) -> int:
         return sum(not result.passed for result in self.assertions)
+
+
+class AgentRunResult(StrictModel):
+    """Combined action-execution and deterministic assertion report.
+
+    ``status`` describes whether the agent action loop completed. ``test_status`` is
+    populated only after the action loop completes and all assertions are evaluated.
+    Keeping these separate prevents successful clicks from being confused with a test
+    passing.
+    """
+
+    test_name: str
+    status: AgentRunStatus
+    test_status: TestStatus | None = None
+    url: str
+    started_at: datetime
+    finished_at: datetime
+    steps: list[StepResult] = Field(default_factory=list)
+    completed_step_indices: list[int] = Field(default_factory=list)
+    assertions: list[AssertionResult] = Field(default_factory=list)
+    failure_reason: str | None = None
+    console_errors: list[str] = Field(default_factory=list)
+    page_errors: list[str] = Field(default_factory=list)
+    opened_page_count: int = Field(default=0, ge=0)
+    popup_count: int = Field(default=0, ge=0)
+    assertions_evaluated: bool = False
+    artifact_paths: list[str] = Field(default_factory=list)
+
+    @property
+    def duration_seconds(self) -> float:
+        return max(0.0, (self.finished_at - self.started_at).total_seconds())
+
+    @property
+    def successful_steps(self) -> int:
+        return sum(step.success for step in self.steps)
+
+    @model_validator(mode="after")
+    def validate_final_test_status(self) -> Self:
+        if not self.assertions_evaluated:
+            if self.test_status is not None or self.assertions:
+                raise ValueError(
+                    "test_status and assertion results require assertions_evaluated=true"
+                )
+            return self
+
+        if self.status != AgentRunStatus.ACTIONS_COMPLETED:
+            raise ValueError("assertions can only be evaluated after action completion")
+        if not self.assertions:
+            raise ValueError("an evaluated test must contain at least one assertion result")
+        all_passed = all(item.passed for item in self.assertions)
+        expected_status = TestStatus.PASS if all_passed else TestStatus.FAIL
+        if self.test_status != expected_status:
+            raise ValueError(
+                f"test_status must be {expected_status.value} based on assertion results"
+            )
+        return self
+
+    @property
+    def failed_attempts(self) -> int:
+        return sum(not step.success for step in self.steps)
+
