@@ -308,6 +308,69 @@ class AssertionSpec(StrictModel):
         return self
 
 
+class DataRequirement(StrictModel):
+    """A test input needed at runtime; the actual value stays outside the LLM."""
+
+    key: EnvironmentReference
+    purpose: NonEmptyString
+    sensitive: bool = False
+
+
+class PlannedStep(StrictModel):
+    """A semantic action intent that has not yet been mapped to a DOM element."""
+
+    action: ActionType
+    target: NonEmptyString
+    value: str | None = None
+    value_ref: EnvironmentReference | None = None
+    wait_state: str = Field(
+        default="visible", pattern=r"^(visible|hidden|attached|detached)$"
+    )
+
+    @model_validator(mode="after")
+    def validate_step_arguments(self) -> Self:
+        if self.action in {ActionType.FILL, ActionType.SELECT}:
+            if (self.value is None) == (self.value_ref is None):
+                raise ValueError(
+                    f"{self.action.value} plan steps require exactly one of value or value_ref"
+                )
+        elif self.action == ActionType.PRESS:
+            if self.value is None or not self.value.strip():
+                raise ValueError("press plan steps require a non-empty key in value")
+            if self.value_ref is not None:
+                raise ValueError("press plan steps do not accept value_ref")
+        elif self.value is not None or self.value_ref is not None:
+            raise ValueError(f"{self.action.value} plan steps do not accept values")
+        if self.action != ActionType.WAIT and self.wait_state != "visible":
+            raise ValueError("wait_state can only be customized for wait plan steps")
+        return self
+
+
+class CompiledTestPlan(StrictModel):
+    """LLM interpretation of the test goal, before it is mapped to live elements."""
+
+    name: NonEmptyString
+    objective: NonEmptyString
+    preconditions: list[NonEmptyString] = Field(default_factory=list, max_length=15)
+    steps: list[PlannedStep] = Field(min_length=1, max_length=100)
+    assertions: list[AssertionSpec] = Field(min_length=1, max_length=25)
+    required_data: list[DataRequirement] = Field(default_factory=list, max_length=25)
+    notes: list[NonEmptyString] = Field(default_factory=list, max_length=15)
+
+    @model_validator(mode="after")
+    def validate_data_references(self) -> Self:
+        keys = [item.key for item in self.required_data]
+        if len(keys) != len(set(keys)):
+            raise ValueError("required_data keys must be unique")
+        known_keys = set(keys)
+        for step in self.steps:
+            if step.value_ref is not None and step.value_ref not in known_keys:
+                raise ValueError(
+                    f"step references {step.value_ref!r}, which is missing from required_data"
+                )
+        return self
+
+
 class AgentDecisionType(StrEnum):
     ACT = "act"
     FINISH = "finish"

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "browser-agent"
-version = "0.3.0"
+version = "0.4.0"
 description = "An AI-assisted agent that converts natural-language test cases into browser actions."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -24,6 +24,9 @@ dev = [
 ]
 browser = [
   "playwright>=1.47,<2.0",
+]
+llm = [
+  "openai>=1.50,<3.0",
 ]
 
 [project.scripts]

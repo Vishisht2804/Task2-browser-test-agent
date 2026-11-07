@@ -4,7 +4,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import SecretStr
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -34,6 +34,9 @@ class Settings(BaseSettings):
     llm_model: str | None = None
     llm_api_key: SecretStr | None = None
     llm_base_url: str | None = None
+    llm_timeout_seconds: int = Field(default=45, ge=1, le=300)
+    llm_max_observed_elements: int = Field(default=250, ge=1, le=2_000)
+    llm_max_visible_text_chars: int = Field(default=8_000, ge=1, le=50_000)
 
 
 @lru_cache(maxsize=1)

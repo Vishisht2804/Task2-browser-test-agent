@@ -1,6 +1,6 @@
 # Browser Agent
 
-A generic browser-testing tool being built in phases. The current implementation includes the project foundation (Phase 0), deterministic Playwright execution (Phase 1), and a browser observer with observation-scoped element resolution (Phase 2). LLM-based test interpretation and autonomous action planning are not implemented yet.
+A generic browser-testing tool built in phases. The current implementation includes the project foundation (Phase 0), deterministic Playwright execution (Phase 1), browser observation with open Shadow DOM and nested iframe discovery (Phase 2), and LLM-based test interpretation plus constrained first-action planning (Phase 3). The autonomous observe–plan–act loop is Phase 4.
 
 ## Requirements
 
@@ -32,13 +32,13 @@ Install development and browser dependencies:
 
 ```bash
 python -m pip install --upgrade pip
-python -m pip install -e ".[dev,browser]"
+python -m pip install -e ".[dev,browser,llm]"
 python -m playwright install chromium
 ```
 
 On Linux servers, Playwright may also need operating-system browser libraries. Use `python -m playwright install --with-deps chromium` on a supported Linux environment when required.
 
-Copy `.env.example` to `.env` when you want to customize settings. `.env` is ignored by Git. Put actual credentials in `.env` or a separate secret store, and reference their variable names in action plans. Do not commit credentials or include them as literal action values.
+Copy `.env.example` to `.env` and set `BA_LLM_MODEL` and `BA_LLM_API_KEY` before using Phase 3. `.env` is ignored by Git. Put test-account credentials in `.env` or a separate secret store, then declare only their variable names with `--data-ref`. The LLM receives the variable names, never the values. Do not commit credentials or put passwords, tokens, or personal account data in the natural-language instruction.
 
 ## Phase 1: execute a deterministic action plan
 
@@ -219,9 +219,91 @@ The resolver rejects an action whose `observation_id` does not match the snapsho
 - The element inventory is capped per frame (500 by default); a warning identifies truncation.
 - Manual Phase 1 JSON plans still use their original main-document locator syntax. Observation-scoped, frame-aware actions are available through `ObservedActionExecutor` for the next agent phase.
 
+## Phase 3: interpret and plan a natural-language test
+
+Phase 3 introduces the LLM but still does **not** execute browser actions. It has two separate responsibilities:
+
+1. `TestInterpreter` converts the user's instruction into a selector-free `CompiledTestPlan` containing a goal, semantic action steps, data requirements, and deterministic assertions.
+2. `ActionPlanner` receives the current Phase 2 browser observation and selects one observed element for the next semantic step. Its response is validated against the current observation and plan before it is accepted.
+
+The model cannot return arbitrary Python, JavaScript, CSS selectors, or XPath. It can only return a `AgentDecision` containing one of the constrained `AgentAction` operations, or a `blocked` decision. The planner rejects unknown element IDs, stale observation IDs, incompatible element/action pairs, changed values, and undeclared data references. A planner `finish` decision does not mean PASS; assertions must still be evaluated by the deterministic assertion engine in Phase 5.
+
+### Configure the LLM
+
+Install the optional provider SDK if it was not installed during setup:
+
+```powershell
+python -m pip install -e ".[llm]"
+```
+
+Set these values in `.env`:
+
+```dotenv
+BA_LLM_PROVIDER=openai
+BA_LLM_MODEL=your-provider-model-name
+BA_LLM_API_KEY=replace-with-your-api-key
+# Optional; leave unset for OpenAI's standard API endpoint.
+BA_LLM_BASE_URL=
+BA_LLM_TIMEOUT_SECONDS=45
+```
+
+The current concrete adapter supports OpenAI and endpoints exposing an OpenAI-compatible Chat Completions API. The internal `LLMClient` protocol is provider-neutral, but native Anthropic/Gemini adapters have not been implemented. A compatible local service can be configured through `BA_LLM_BASE_URL` and the corresponding model/key values.
+
+### Plan a test
+
+For a test that does not need account credentials:
+
+```powershell
+browser-agent plan `
+  --url "https://example.com" `
+  --test "Search for a wireless keyboard and verify that results are displayed"
+```
+
+For a login flow, declare the names of the required data references:
+
+```powershell
+browser-agent plan `
+  --url "https://example.com/login" `
+  --test "Log in as a customer and verify the dashboard is shown" `
+  --data-ref CUSTOMER_EMAIL `
+  --data-ref CUSTOMER_PASSWORD `
+  --headed
+```
+
+Put the actual values in the local `.env` file:
+
+```dotenv
+CUSTOMER_EMAIL=customer@example.com
+CUSTOMER_PASSWORD=your-test-account-password
+```
+
+The Phase 3 compiler may identify data references needed by the test. If the current command did not declare a required reference, the planner returns `BLOCKED` rather than inventing a value or proceeding with a credential field. Add the required `--data-ref` argument and rerun. The values themselves are not placed in the LLM prompt or the generated plan.
+
+Print structured output:
+
+```powershell
+browser-agent plan `
+  --url "https://example.com/login" `
+  --test "Log in as a customer and verify the dashboard is shown" `
+  --data-ref CUSTOMER_EMAIL `
+  --data-ref CUSTOMER_PASSWORD `
+  --json
+```
+
+Each planning run writes `compiled-plan.json`, `observation.json`, `first-decision.json`, `planning-summary.json`, and (when screenshot capture succeeds) `page.png` beneath `BA_ARTIFACT_DIR`. Only the proposed first action is produced. Phase 4 will connect repeated observations and decisions to the action executor.
+
+### Phase 3 security and limitations
+
+- The LLM sees data-reference names, not values loaded from `.env`.
+- Passwords, tokens, email addresses, phone numbers, usernames, and similar sensitive targets must use environment references rather than literal plan values. The compiler rejects literal values for these sensitive target descriptions.
+- Website text is explicitly treated as untrusted input in the planner prompt. The planner is restricted to the current semantic step and current observation.
+- LLM output is parsed and validated against Pydantic schemas before it can be used.
+- The concrete model adapter currently uses JSON mode plus local schema validation for compatibility with OpenAI-compatible endpoints; it does not assume every provider supports the same strict JSON Schema API.
+- No action is executed by `plan`. The browser is opened only for observation and screenshot capture.
+
 ## Phase 0: validate a plain-English request
 
-The `run` command still accepts and validates a natural-language test request. It does not execute it yet; LLM interpretation is introduced in Phase 3.
+The `run` command accepts and validates a natural-language test request without calling the LLM or opening a browser. Use the Phase 3 `plan` command for LLM interpretation and first-action planning.
 
 ```powershell
 browser-agent run `
@@ -253,9 +335,12 @@ Settings use the `BA_` environment-variable prefix.
 | `BA_BROWSER_EXECUTABLE_PATH` | unset | Optional path to a local Chromium/Chrome executable |
 | `BA_ARTIFACT_DIR` | `artifacts` | Screenshot and execution-report directory |
 | `BA_LLM_PROVIDER` | `openai` | Provider selection for Phase 3 |
-| `BA_LLM_MODEL` | unset | Provider model name |
-| `BA_LLM_API_KEY` | unset | Provider API key |
-| `BA_LLM_BASE_URL` | unset | Optional compatible API endpoint |
+| `BA_LLM_MODEL` | unset | Model name supported by the selected provider; required for Phase 3 |
+| `BA_LLM_API_KEY` | unset | Provider API key; required for Phase 3 |
+| `BA_LLM_BASE_URL` | unset | Optional OpenAI-compatible API endpoint |
+| `BA_LLM_TIMEOUT_SECONDS` | `45` | Timeout for one LLM request |
+| `BA_LLM_MAX_OBSERVED_ELEMENTS` | `250` | Maximum observed elements sent to the planner |
+| `BA_LLM_MAX_VISIBLE_TEXT_CHARS` | `8000` | Maximum visible page-text characters sent to the planner |
 
 ## Data contracts
 
@@ -263,7 +348,8 @@ Settings use the `BA_` environment-variable prefix.
 
 - `TestSpec`: user request, URL, test-data references, and execution limits.
 - `BrowserObservation`: page metadata, frame inventory, visible text, and discovered elements.
-- `AgentAction` / `AgentDecision`: constrained actions and planner decisions (agent arrives in Phases 3–4).
+- `AgentAction` / `AgentDecision`: constrained browser actions and planner decisions.
+- `CompiledTestPlan`, `PlannedStep`, and `DataRequirement`: LLM interpretation output before DOM mapping.
 - `ManualTestPlan` / `ManualAction`: deterministic, developer-authored action plans for Phase 1.
 - `AssertionSpec`: machine-readable expected conditions for Phase 5.
 - `ManualExecutionReport` / `ExecutionResult`: action and test execution outcomes.
@@ -281,7 +367,7 @@ The integration tests use a locally installed Chromium. They are skipped when Ch
 - **Phase 0 — Foundation:** project structure, configuration, CLI request validation, and shared schemas.
 - **Phase 1 — Browser engine:** Chromium lifecycle, deterministic actions, semantic locators, screenshots, and execution logs.
 - **Phase 2 — Observer:** DOM and accessibility-oriented inspection, open Shadow DOM, nested iframes, and observation-scoped locator resolution. Implemented.
-- **Phase 3 — LLM integration:** plain-English test interpretation and structured action planning.
+- **Phase 3 — LLM integration:** plain-English test interpretation, structured semantic plans, constrained first-action planning, and model-response validation. Implemented.
 - **Phase 4 — Agent loop:** observe–plan–act execution and bounded error recovery.
 - **Phase 5 — Assertions and reporting:** deterministic expected-condition evaluation and reliable PASS/FAIL.
 - **Phase 6 — Validation:** complex DOM fixtures, PHPTravels, and an unrelated website.

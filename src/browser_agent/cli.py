@@ -19,7 +19,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="browser-agent",
         description=(
-            "Run deterministic browser actions or validate a natural-language test request."
+            "Inspect pages, plan natural-language tests, or run deterministic browser actions."
         ),
     )
     parser.add_argument("--version", action="version", version=f"browser-agent {__version__}")
@@ -83,6 +83,33 @@ def build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true", help="Print the complete browser observation as JSON."
     )
     inspect_parser.add_argument(
+        "--max-elements-per-frame",
+        type=int,
+        default=500,
+        help="Maximum discovered elements per frame (default: 500).",
+    )
+    plan_parser = subparsers.add_parser(
+        "plan",
+        help="Compile a natural-language test and propose its first browser action (no execution).",
+    )
+    plan_parser.add_argument("--url", required=True, help="Starting website URL.")
+    plan_parser.add_argument("--test", required=True, help="Plain-English test instruction.")
+    plan_parser.add_argument(
+        "--data-ref",
+        action="append",
+        default=[],
+        metavar="ENV_VAR",
+        help="Declared environment variable containing test data; repeat as needed.",
+    )
+    plan_parser.add_argument("--max-steps", type=int, default=None)
+    plan_parser.add_argument("--timeout", type=int, default=None)
+    plan_parser.add_argument(
+        "--headed", action="store_true", help="Show Chromium while inspecting the page."
+    )
+    plan_parser.add_argument(
+        "--json", action="store_true", help="Print plan and first decision as JSON."
+    )
+    plan_parser.add_argument(
         "--max-elements-per-frame",
         type=int,
         default=500,
@@ -223,6 +250,93 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print(f"Screenshot:      {result.screenshot_path}")
         return 0
 
+    if args.command == "plan":
+        try:
+            from browser_agent.agent.planning_runner import run_planning
+        except ModuleNotFoundError as exc:
+            if exc.name == "playwright":
+                print(
+                    "Playwright is not installed. Install browser support with "
+                    '`python -m pip install -e ".[browser]"`.',
+                    file=sys.stderr,
+                )
+                return 2
+            raise
+
+        try:
+            spec = TestSpec(
+                url=args.url,
+                instruction=args.test,
+                test_data_refs=args.data_ref,
+                max_steps=(
+                    args.max_steps if args.max_steps is not None else settings.default_max_steps
+                ),
+                timeout_seconds=(
+                    args.timeout
+                    if args.timeout is not None
+                    else settings.default_timeout_seconds
+                ),
+            )
+        except ValidationError as exc:
+            print("Invalid test request:", file=sys.stderr)
+            for error in exc.errors(include_url=False):
+                location = ".".join(str(part) for part in error["loc"])
+                print(f"  {location}: {error['msg']}", file=sys.stderr)
+            return 2
+
+        if args.max_elements_per_frame < 1:
+            print("--max-elements-per-frame must be at least 1", file=sys.stderr)
+            return 2
+
+        try:
+            result = run_planning(
+                spec=spec,
+                settings=settings,
+                headless=False if args.headed else None,
+                max_elements_per_frame=args.max_elements_per_frame,
+            )
+        except Exception as exc:
+            print(f"Planning failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+            return 1
+
+        if args.json:
+            print(
+                json.dumps(
+                    {
+                        "compiled_plan": result.plan.model_dump(mode="json"),
+                        "observation": result.observation.model_dump(mode="json"),
+                        "first_decision": result.decision.model_dump(mode="json"),
+                        "artifact_dir": str(result.artifact_dir),
+                        "artifact_paths": [str(path) for path in result.artifact_paths],
+                    },
+                    indent=2,
+                )
+            )
+        else:
+            print("Natural-language test compiled and page inspected.")
+            print(f"Test:            {result.plan.name}")
+            print(f"Objective:       {result.plan.objective}")
+            print(f"Planned steps:   {len(result.plan.steps)}")
+            print(f"Assertions:      {len(result.plan.assertions)}")
+            required = [item.key for item in result.plan.required_data]
+            missing = [item for item in required if item not in spec.test_data_refs]
+            print(f"Required data:   {', '.join(required) or '(none)'}")
+            if missing:
+                print(f"Missing --data-ref: {', '.join(missing)}")
+            print(f"Page:            {result.observation.title or '(no title)'}")
+            print(f"Observed items:  {len(result.observation.elements)}")
+            print(f"Decision:        {result.decision.decision.value.upper()}")
+            if result.decision.action is not None:
+                print(f"Target:          {result.plan.steps[0].target}")
+                print(f"Action:          {result.decision.action.action.value}")
+                print(f"Element ID:      {result.decision.action.element_id}")
+            print(f"Reason:          {result.decision.reason}")
+            print("Note:            Phase 3 proposes an action but does not execute it.")
+            print("Artifacts:")
+            for artifact in result.artifact_paths:
+                print(f"  - {artifact}")
+        return 0 if result.decision.decision.value != "blocked" else 1
+
     if args.command != "run":
         parser.error("unknown command")
 
@@ -255,8 +369,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"Max steps:    {spec.max_steps}")
         print(f"Timeout:      {spec.timeout_seconds}s")
         print(
-            "Status:       READY (use `execute` with a JSON action plan "
-            "for Phase 1 browser execution)"
+            "Status:       READY (use `plan` for LLM interpretation and first-action planning; "
+            "`plan` does not execute the action)"
         )
 
     return 0
